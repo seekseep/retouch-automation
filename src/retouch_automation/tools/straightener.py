@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 
@@ -20,6 +21,8 @@ import numpy as np
 from .. import overlay
 from ..config import StraightenConfig
 from ..models import ArtworkDetection, RawImage, ReferenceLine, Status, Straightening
+
+logger = logging.getLogger(__name__)
 
 #: 線分をこの長さ未満なら捨てる（画像の長辺に対する比率）
 MIN_LINE_RATIO = 0.08
@@ -50,6 +53,9 @@ class Straightener:
         lines = _detect_reference_lines(gray, background, self.config.max_abs_angle)
         horizontals = [l for l in lines if l.kind == "horizontal"]
         verticals = [l for l in lines if l.kind == "vertical"]
+        h_angle = _length_weighted_median(horizontals)
+        v_angle = _length_weighted_median(verticals)
+        _log_lines(raw.photo_id, lines)
 
         if overlay_path is not None:
             overlay.save(overlay.draw_lines(image, lines), overlay_path)
@@ -58,16 +64,20 @@ class Straightener:
             return Straightening(
                 status=Status.FALLBACK,
                 note=f"基準線が {len(lines)} 本しか取れないため回転なし",
+                horizontal_degrees=h_angle,
+                vertical_degrees=v_angle,
                 lines=lines,
                 overlay_path=overlay_path,
             )
 
-        angle, confidence = _aggregate(horizontals, verticals)
+        angle, confidence = _aggregate(h_angle, v_angle)
 
         if abs(angle) > self.config.max_abs_angle:
             return Straightening(
                 status=Status.FALLBACK,
                 note=f"推定角 {angle:.2f} 度が上限を超えるため回転なし",
+                horizontal_degrees=h_angle,
+                vertical_degrees=v_angle,
                 lines=lines,
                 overlay_path=overlay_path,
             )
@@ -76,6 +86,8 @@ class Straightener:
             status=Status.SUCCESS,
             angle_degrees=angle,
             confidence=confidence,
+            horizontal_degrees=h_angle,
+            vertical_degrees=v_angle,
             lines=lines,
             overlay_path=overlay_path,
         )
@@ -106,24 +118,68 @@ def _background_area(
 def _detect_reference_lines(
     gray: np.ndarray, background: np.ndarray, max_abs_angle: float
 ) -> list[ReferenceLine]:
-    """背景の中から、水平・垂直に近い線分だけを拾う。"""
-    masked = cv2.bitwise_and(gray, gray, mask=background)
+    """背景の中から、水平・垂直に近い線分だけを拾う。
+
+    除外領域を塗りつぶしてから探してはいけない。塗った矩形の縁が完全な水平・垂直の
+    長い線分として拾われ、長さで重み付けした中央値がそこに張り付いて 0 度になる。
+    線分は元の画像で探し、背景に入っている区間だけに切り詰める。
+    """
     detector = cv2.createLineSegmentDetector()
-    segments = detector.detect(masked)[0]
+    segments = detector.detect(gray)[0]
     if segments is None:
         return []
 
     min_length = max(gray.shape) * MIN_LINE_RATIO
     lines: list[ReferenceLine] = []
 
-    for x1, y1, x2, y2 in segments.reshape(-1, 4):
+    for segment in segments.reshape(-1, 4):
+        clipped = _clip_to_area(*(float(v) for v in segment), background)
+        if clipped is None:
+            continue
+        x1, y1, x2, y2 = clipped
         if math.hypot(x2 - x1, y2 - y1) < min_length:
             continue
-        line = _classify(float(x1), float(y1), float(x2), float(y2))
+        line = _classify(x1, y1, x2, y2)
         if line is not None and abs(line.angle_degrees) <= max_abs_angle:
             lines.append(line)
 
     return lines
+
+
+def _clip_to_area(
+    x1: float, y1: float, x2: float, y2: float, area: np.ndarray
+) -> tuple[float, float, float, float] | None:
+    """線分のうち area に入っている最長の連続区間を返す。入っていなければ None。
+
+    作品の後ろを通る柱の縁のように、除外領域をまたぐ線分も背景側の区間は使える。
+    """
+    height, width = area.shape
+    steps = max(2, int(math.hypot(x2 - x1, y2 - y1)) + 1)
+    t = np.linspace(0.0, 1.0, steps)
+    xs = np.clip(np.rint(x1 + (x2 - x1) * t).astype(int), 0, width - 1)
+    ys = np.clip(np.rint(y1 + (y2 - y1) * t).astype(int), 0, height - 1)
+    inside = area[ys, xs] > 0
+
+    best_start, best_end = -1, -1
+    start = -1
+    for i, flag in enumerate(inside):
+        if flag and start < 0:
+            start = i
+        if start >= 0 and (not flag or i == steps - 1):
+            end = i if flag else i - 1
+            if end - start > best_end - best_start:
+                best_start, best_end = start, end
+            start = -1
+
+    if best_start < 0 or best_end <= best_start:
+        return None
+    t0, t1 = t[best_start], t[best_end]
+    return (
+        x1 + (x2 - x1) * t0,
+        y1 + (y2 - y1) * t0,
+        x1 + (x2 - x1) * t1,
+        y1 + (y2 - y1) * t1,
+    )
 
 
 def _classify(x1: float, y1: float, x2: float, y2: float) -> ReferenceLine | None:
@@ -145,13 +201,8 @@ def _classify(x1: float, y1: float, x2: float, y2: float) -> ReferenceLine | Non
     return ReferenceLine(x1=x1, y1=y1, x2=x2, y2=y2, kind=kind, angle_degrees=angle)
 
 
-def _aggregate(
-    horizontals: list[ReferenceLine], verticals: list[ReferenceLine]
-) -> tuple[float, float]:
-    """水平系と垂直系それぞれの代表角を出し、一致度を確信度にする。"""
-    h_angle = _length_weighted_median(horizontals)
-    v_angle = _length_weighted_median(verticals)
-
+def _aggregate(h_angle: float | None, v_angle: float | None) -> tuple[float, float]:
+    """水平系と垂直系の代表角をまとめ、一致度を確信度にする。"""
     if h_angle is None:
         return (v_angle or 0.0, 0.4)
     if v_angle is None:
@@ -161,6 +212,25 @@ def _aggregate(
     disagreement = abs(h_angle - v_angle)
     confidence = max(0.0, 1.0 - disagreement)
     return ((h_angle + v_angle) / 2.0, confidence)
+
+
+def _log_lines(photo_id: str, lines: list[ReferenceLine]) -> None:
+    """基準線を 1 本ずつ残す。どの線が角度を決めたかを後から追えるように。"""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    for line in sorted(lines, key=lambda l: (l.kind, l.angle_degrees)):
+        length = math.hypot(line.x2 - line.x1, line.y2 - line.y1)
+        logger.debug(
+            "%s T4 基準線 %-10s %+.2f°  長さ %4.0f  (%.0f,%.0f)-(%.0f,%.0f)",
+            photo_id,
+            line.kind,
+            line.angle_degrees,
+            length,
+            line.x1,
+            line.y1,
+            line.x2,
+            line.y2,
+        )
 
 
 def _length_weighted_median(lines: list[ReferenceLine]) -> float | None:

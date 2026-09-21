@@ -159,6 +159,10 @@ class Straightening(BaseModel):
     #: XMP へ書く際の符号は geometry.to_crop_angle() に閉じ込める。
     angle_degrees: float = 0.0
     confidence: float = 0.0
+    #: 水平線・垂直線それぞれから求めた角度（度、CCW 正）。その系の線が無ければ None。
+    #: 両者の食い違いが確信度になる。傾きの取り違えを調べるときはここを見る。
+    horizontal_degrees: float | None = None
+    vertical_degrees: float | None = None
     lines: list[ReferenceLine] = Field(default_factory=list)
     overlay_path: Path | None = None
     note: str | None = None

@@ -75,6 +75,10 @@ MIN_COMPONENT_AREA_RATIO = 0.0005
 FRAME_SPAN_RATIO = 0.98
 
 
+class _ModelMiss(Exception):
+    """モデルでは作品が取れなかった。理由を添えて classical に譲る。"""
+
+
 class ArtworkDetector:
     name = "T3_artwork_detector"
 
@@ -126,17 +130,21 @@ class ArtworkDetector:
                 raw, f"プレビューがほぼ一様（標準偏差 {stddev:.2f}）のため画像全体を採用"
             )
 
+        detail: dict = {"backend": "classical"}
         if self._backend == "model":
-            found = self._detect_with_model(image)
-            if found is not None:
-                mask, confidence, detail = found
-                return self._finish(raw, image, mask, confidence, detail, mask_path, overlay_path)
-            # モデルが見つけられなかった場合は classical に落として続ける
+            try:
+                mask, confidence, model_detail = self._detect_with_model(image)
+            except _ModelMiss as miss:
+                # モデルが見つけられなかった場合は classical に落として続ける。
+                # 理由は結果に残す（ログと result.json で追えるように）
+                detail["model_miss"] = str(miss)
+            else:
+                return self._finish(
+                    raw, image, mask, confidence, model_detail, mask_path, overlay_path
+                )
 
         mask = _recover_branches(image, _segment(image))
-        return self._finish(
-            raw, image, mask, None, {"backend": "classical"}, mask_path, overlay_path
-        )
+        return self._finish(raw, image, mask, None, detail, mask_path, overlay_path)
 
     def _finish(
         self,
@@ -174,17 +182,17 @@ class ArtworkDetector:
             overlay_path=overlay_path,
         )
 
-    def _detect_with_model(
-        self, image: np.ndarray
-    ) -> tuple[np.ndarray, float, dict] | None:
+    def _detect_with_model(self, image: np.ndarray) -> tuple[np.ndarray, float, dict]:
         """テキスト指示で位置を出し、その枠を種にして領域を切る。
+
+        取れなければ _ModelMiss を投げる。
 
         枠は「作品全体」を指す 1 本を主にして、そこに重なる部品の枠だけを足す。
         重ならない枠を足すと、隣に並んだ別の作品まで枠に入る（実写で踏んだ）。
         """
         boxes = self._locate(image)
         if not boxes:
-            return None
+            raise _ModelMiss("位置推定が枠を 1 つも返さない")
 
         primary = max(boxes, key=lambda b: b[4])
         merged = list(primary[:4])
@@ -200,7 +208,7 @@ class ArtworkDetector:
 
         mask = self._segment_with_model(image, merged)
         if mask is None or not mask.any():
-            return None
+            raise _ModelMiss(f"領域抽出が空（位置推定の確信度 {primary[4]:.2f}）")
 
         # 位置推定の確信度が低いと、SAM 2.1 が種にした枠の中の細部だけを拾って
         # マスクが極端に痩せる（実写で面積比 0.005 まで落ちた）。
@@ -209,7 +217,9 @@ class ArtworkDetector:
         cleaned = _clean(mask)
         area_ratio = float(np.count_nonzero(cleaned)) / cleaned.size
         if not (MIN_AREA_RATIO <= area_ratio <= MAX_AREA_RATIO):
-            return None
+            raise _ModelMiss(
+                f"面積比 {area_ratio:.3f} が想定外（位置推定の確信度 {primary[4]:.2f}）"
+            )
 
         detail = {
             "backend": "model",

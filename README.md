@@ -62,6 +62,8 @@ uv run retouch-automation process /path/to/photos
 | --- | --- |
 | `--config <json>` | 設定ファイル。余白量やしきい値を上書きする |
 | `--overwrite-xmp` | 既存 XMP を丸ごと置き換える（Lightroom が書いた EXIF 等も失われる） |
+| `-v`, `--verbose` | 基準線 1 本ごとの角度など、細部まで画面に出す |
+| `-q`, `--quiet` | 要確認と警告だけを画面に出す |
 
 **既定は `skip` で、既存の XMP があれば触らない。** 人が Lightroom で直した
 回転・トリミングを再実行で消さないため。ツールを改良して全部作り直したいときだけ
@@ -71,6 +73,16 @@ uv run retouch-automation process /path/to/photos
 
 - `<raw_dir>/*.xmp` … RAW と同名のサイドカー
 - `<raw_dir>/.retouch-automation/` … プレビュー・マスク・中間 JSON・確認用画像・レポート
+- `<raw_dir>/.retouch-automation/process.log` … 詳細ログ（画面の出し方にかかわらず細部まで残す）
+
+画面（stderr）には工程ごとの進み具合と、写真 1 枚・ツール 1 つごとの結果を 1 行ずつ出す。
+フォールバックした結果は WARNING になる。
+
+```
+21:33:19 INFO    [10/13] DSC02602 T4  回転 +1.23°  確信度 0.96  水平 7 本 +1.25° / 垂直 23 本 +1.21°
+21:33:17 WARNING [ 5/13] DSC02597 T5  L 0.000 T 0.000 R 1.000 B 1.000  回転 +0.19°  … 作品が画像端に近いため全画面を採用
+21:33:21 INFO    [10/13] DSC02602 T7  既存の XMP を残してスキップ  DSC02602.xmp
+```
 
 ## 設定
 

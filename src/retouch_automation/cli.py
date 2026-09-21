@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import argparse
-import json
+import logging
 from pathlib import Path
 
+from . import logs
 from .config import Config
 from .orchestrator import Orchestrator
+
+logger = logging.getLogger(__name__)
+
+#: 詳細ログの置き場所（作業ディレクトリの中）
+LOG_FILE_NAME = "process.log"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,13 +34,29 @@ def main(argv: list[str] | None = None) -> int:
             "既定は skip で、既存があれば触らない（人の手直しを守るため）"
         ),
     )
+    verbosity = process.add_mutually_exclusive_group()
+    verbosity.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="基準線 1 本ごとの角度など、細部まで画面に出す",
+    )
+    verbosity.add_argument(
+        "-q", "--quiet", action="store_true", help="要確認と警告だけを画面に出す"
+    )
 
     args = parser.parse_args(argv)
+    logs.setup(1 if args.verbose else -1 if args.quiet else 0)
 
     config = Config.load(args.config)
     if args.overwrite_xmp:
         config.xmp.on_existing = "overwrite"
 
-    summary = Orchestrator(args.raw_dir, config).process()
-    print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
+    orchestrator = Orchestrator(args.raw_dir, config)
+    # 画面の出し方にかかわらず、ファイルには細部まで残す
+    log_path = orchestrator.workspace.root / LOG_FILE_NAME
+    logs.attach_file(log_path)
+
+    orchestrator.process()
+    logger.info("詳細ログ %s", log_path)
     return 0

@@ -114,6 +114,23 @@ def test_straightener_ignores_lines_inside_artwork(tmp_path):
     assert result.angle_degrees == pytest.approx(0.0, abs=0.5)
 
 
+def test_straightener_ignores_edges_of_excluded_area(tmp_path):
+    """作品を除外した領域の縁を基準線と取り違えない。
+
+    除外領域を黒く塗ってから線分を探すと、塗った矩形の縁が完全な水平・垂直の
+    長い線分として拾われ、傾いた写真でも 0 度に張り付く（実写 13 枚中 5 枚で発生）。
+    """
+    raw = write_preview(tilted_room(TILT), tmp_path / "tilted_with_artwork.jpg")
+    detection = ArtworkDetection(
+        status=Status.SUCCESS,
+        bbox=Box(space=Space.PREVIEW, left=220, top=150, right=420, bottom=330),
+    )
+    result = Straightener(StraightenConfig()).estimate(raw, detection)
+
+    assert result.angle_degrees == pytest.approx(TILT, abs=0.5)
+    assert all(abs(line.angle_degrees) > 1.0 for line in result.lines)
+
+
 # --- T3 作品検出 -------------------------------------------------------
 
 

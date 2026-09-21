@@ -7,12 +7,16 @@ torch と transformers は optional extra（`uv sync --extra models`）なので
 読み込んだモデルはプロセス内で使い回す。写真ごとに読み直すと数十秒が毎回乗る。
 各ツールの prepare() で温めて release() で放す。
 
-Apple Silicon では MPS を使う。使えない環境では黙って CPU に落ちる。
+Apple Silicon では MPS を使う。使えない環境では CPU に落ちる（処理は止めず、ログに残す）。
 """
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 #: モデル ID とデバイスの組ごとに 1 個だけ持つ
 _CACHE: dict[tuple[str, str, str], Any] = {}
@@ -37,12 +41,17 @@ def resolve_device(preference: str = "auto") -> str:
     import torch
 
     if preference == "auto":
-        return "mps" if torch.backends.mps.is_available() else "cpu"
-    if preference == "mps" and not torch.backends.mps.is_available():
-        return "cpu"
-    if preference == "cuda" and not torch.cuda.is_available():
-        return "cpu"
-    return preference
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+    elif preference == "mps" and not torch.backends.mps.is_available():
+        device = "cpu"
+    elif preference == "cuda" and not torch.cuda.is_available():
+        device = "cpu"
+    else:
+        device = preference
+
+    if preference not in ("auto", device):
+        logger.warning("デバイス %s が使えないため CPU で動かす", preference)
+    return device
 
 
 def load_embedder(model_id: str, device: str) -> tuple[Any, Any]:
@@ -80,6 +89,9 @@ def _load(kind: str, model_id: str, device: str) -> tuple[Any, Any]:
     if key in _CACHE:
         return _CACHE[key]
 
+    logger.info("モデル読み込み %s: %s（%s）", kind, model_id, device)
+    started = time.perf_counter()
+
     from transformers import (
         AutoImageProcessor,
         AutoModel,
@@ -103,4 +115,5 @@ def _load(kind: str, model_id: str, device: str) -> tuple[Any, Any]:
 
     loaded = (processor, model.to(device).eval())
     _CACHE[key] = loaded
+    logger.debug("モデル読み込み %s 完了 %.1f 秒", kind, time.perf_counter() - started)
     return loaded
