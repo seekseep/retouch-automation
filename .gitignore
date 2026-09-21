@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+.retouch-automation/
+outputs/
+samples/*
+!samples/.gitkeep
+models/
+.pytest_cache/
