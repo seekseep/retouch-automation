@@ -6,7 +6,8 @@
   3. 花・葉・枝先・花器を含む範囲を求める
   4. 構図上必要な余白を足す
   5. 回転で生じる画像外領域を考慮する
-  6. 最終範囲を決める
+  6. 最終範囲を決める。縦横比は Lightroom の比率プリセットのうちいちばん近いものに、
+     枠を広げる向きで合わせる
 
 全写真にトリミング設定を出すが、全写真を狭く切るという意味ではない。
 作品が画像端に近い、あるいは検出に失敗した場合は元画像に近い広い範囲を採る。
@@ -15,7 +16,9 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
+from typing import NamedTuple
 
 import cv2
 import numpy as np
@@ -25,6 +28,15 @@ from ..config import CropConfig
 from ..models import ArtworkDetection, Box, Crop, RawImage, Space, Status, Straightening
 
 FULL_FRAME = (0.0, 0.0, 1.0, 1.0)
+
+#: 枠が置き場所に収まるかを判定するときの許容誤差（px）
+PLACEMENT_TOLERANCE = 1e-6
+
+
+class AspectRatio(NamedTuple):
+    label: str
+    #: 幅 / 高さ
+    value: float
 
 
 class Cropper:
@@ -62,15 +74,33 @@ class Cropper:
 
         # 回転で生じる画像外領域（黒い余白）を避けられるか見る
         safe = geometry.largest_inscribed_rect(raw.image_size, angle)
-        contains_void = not _contains(safe, with_margin)
-        if contains_void and not self.config.allow_void:
+        needs_void = not _contains(safe, with_margin)
+        if needs_void and not self.config.allow_void:
             with_margin = _intersect(with_margin, safe)
+        wanted = with_margin.clamped(raw.image_size)
 
-        final = with_margin.clamped(raw.image_size)
+        # 比率プリセットに合わせる。黒い余白を避けられる置き方を先に試す
+        image = Box(
+            space=Space.IMAGE,
+            left=0.0,
+            top=0.0,
+            right=float(raw.image_size.width),
+            bottom=float(raw.image_size.height),
+        )
+        areas = [safe, image] if self.config.allow_void else [safe]
+        fitted = _fit_aspect(wanted, _aspect_ratios(self.config.aspect_ratios), areas)
+        final, aspect_ratio = fitted if fitted is not None else (wanted, None)
+        contains_void = needs_void or not _contains(safe, final)
         left, top, right, bottom = geometry.image_to_crop_norm(final, raw.image_size, angle)
 
         if overlay_path is not None:
             _draw(raw, final, overlay_path)
+
+        notes = []
+        if detection.status is not Status.SUCCESS:
+            notes.append("作品検出がフォールバックのため広めに採用")
+        if fitted is None and self.config.aspect_ratios:
+            notes.append("どの比率プリセットも画像に収まらないため自由比率")
 
         return Crop(
             angle_degrees=angle,
@@ -79,10 +109,11 @@ class Cropper:
             top=top,
             right=right,
             bottom=bottom,
+            aspect_ratio=aspect_ratio,
             keeps_artwork=True,
             contains_void=contains_void,
             overlay_path=overlay_path,
-            note=None if detection.status is Status.SUCCESS else "作品検出がフォールバックのため広めに採用",
+            note="、".join(notes) or None,
         )
 
 
@@ -139,6 +170,65 @@ def _expand(box: Box, ratio: float) -> Box:
         right=box.right + dx,
         bottom=box.bottom + dy,
     )
+
+
+def _aspect_ratios(presets: list[tuple[float, float]]) -> list[AspectRatio]:
+    """比率プリセットを縦長・横長の両方の向きに展開する。"""
+    ratios = []
+    for a, b in presets:
+        short, long = sorted((a, b))
+        name = f"{short:g}x{long:g}"
+        if short == long:
+            ratios.append(AspectRatio(name, 1.0))
+            continue
+        ratios.append(AspectRatio(f"{name} 横", long / short))
+        ratios.append(AspectRatio(f"{name} 縦", short / long))
+    return ratios
+
+
+def _fit_aspect(
+    box: Box, ratios: list[AspectRatio], areas: list[Box]
+) -> tuple[Box, str] | None:
+    """box を含み、縦横比がいちばん近いプリセットの枠を返す。
+
+    枠は広げる向きにだけ変える。近さは比の対数の差で測るので、
+    縦長と横長を同じ尺度で比べられる。いちばん近い比率が置けなければ
+    次に近い比率を試し、どれも置けなければ None。
+    areas は置き場所の候補で、先頭ほど優先する。
+    """
+    if box.width <= 0 or box.height <= 0:
+        return None
+    current = math.log(box.width / box.height)
+    for ratio in sorted(ratios, key=lambda r: abs(math.log(r.value) - current)):
+        width = max(box.width, box.height * ratio.value)
+        height = width / ratio.value
+        for area in areas:
+            placed = _place(box, width, height, area)
+            if placed is not None:
+                return placed, ratio.label
+    return None
+
+
+def _place(inner: Box, width: float, height: float, area: Box) -> Box | None:
+    """inner を含む width x height の枠を area の中に置く。置けなければ None。
+
+    inner と中心を揃え、area からはみ出す分だけずらす。
+    """
+    left = _slide(inner.left, inner.right, width, area.left, area.right)
+    top = _slide(inner.top, inner.bottom, height, area.top, area.bottom)
+    if left is None or top is None:
+        return None
+    return Box(space=inner.space, left=left, top=top, right=left + width, bottom=top + height)
+
+
+def _slide(start: float, end: float, length: float, lower: float, upper: float) -> float | None:
+    """1 軸ぶんの _place。[start, end] を含み [lower, upper] に収まる区間の始点。"""
+    earliest = max(end - length, lower)
+    latest = min(start, upper - length)
+    if earliest > latest + PLACEMENT_TOLERANCE:
+        return None
+    centered = (start + end - length) / 2.0
+    return min(max(centered, earliest), latest)
 
 
 def _touches_edge(box: Box, raw: RawImage, ratio: float) -> bool:

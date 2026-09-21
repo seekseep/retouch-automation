@@ -180,6 +180,8 @@ class Crop(BaseModel):
     top: float = 0.0
     right: float = 1.0
     bottom: float = 1.0
+    #: 合わせた比率プリセット（"4x5 縦" など）。全画面や自由比率のときは None
+    aspect_ratio: str | None = None
     #: 回転後の有効画像領域と作品全体を同時に保持できたか
     keeps_artwork: bool = True
     contains_void: bool = False

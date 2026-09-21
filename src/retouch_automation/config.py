@@ -71,6 +71,25 @@ class CropConfig(BaseModel):
     edge_proximity_ratio: float = 0.03
     #: 作品を切り落とすくらいなら黒い余白を許容する
     allow_void: bool = True
+    #: トリミング枠の縦横比の候補。Lightroom の切り抜きにある比率プリセットと同じもの。
+    #:
+    #: 「短辺, 長辺」で書き、縦長・横長どちらの向きでも使う。作品と余白を含む枠に
+    #: いちばん近い比率を選び、枠を広げる向きにだけ合わせる（作品は切らない）。
+    #: いちばん近い比率が画像に収まらなければ、次に近い比率を試す。
+    #: 空にすると比率を揃えず、作品に合わせた自由な比率のままにする。
+    aspect_ratios: list[tuple[float, float]] = Field(
+        default_factory=lambda: [
+            (1, 1),
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            (4, 5),
+            (5, 7),
+            (8.5, 11),
+            (9, 16),
+            (10, 16),
+        ]
+    )
 
 
 class DevelopConfig(BaseModel):

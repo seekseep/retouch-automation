@@ -3,6 +3,9 @@
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
+from retouch_automation import geometry
 from retouch_automation.config import CropConfig, XmpConfig
 from retouch_automation.models import (
     ArtworkDetection,
@@ -65,6 +68,72 @@ def test_missing_detection_keeps_full_frame():
         Straightening(status=Status.FALLBACK),
     )
     assert crop.is_full_frame
+
+
+def crop_in_pixels(crop: Crop, size: Size) -> Box:
+    """crs:Crop* を、回転後の画像で見た軸平行の枠（px）に戻す。"""
+    cx, cy = size.width / 2.0, size.height / 2.0
+    left, top = geometry.rotate_point(
+        crop.left * size.width, crop.top * size.height, crop.angle_degrees, cx, cy
+    )
+    right, bottom = geometry.rotate_point(
+        crop.right * size.width, crop.bottom * size.height, crop.angle_degrees, cx, cy
+    )
+    return Box(space=Space.IMAGE, left=left, top=top, right=right, bottom=bottom)
+
+
+def test_crop_takes_the_closest_aspect_ratio():
+    # 作品＋余白は 1488 x 2480（0.6）。いちばん近いのは 10x16 の縦長（0.625）
+    raw = make_raw()
+    crop = Cropper(CropConfig()).compute(
+        raw, detection_at(600, 250, 900, 750), Straightening(status=Status.SUCCESS)
+    )
+    assert crop.aspect_ratio == "10x16 縦"
+
+    box = crop_in_pixels(crop, raw.image_size)
+    assert box.width / box.height == pytest.approx(10 / 16)
+    # 広げる向きにだけ合わせるので、作品＋余白（2256, 760）-（3744, 3240）は残る
+    assert box.left <= 2256 + 1e-6 and box.right >= 3744 - 1e-6
+    assert box.top <= 760 + 1e-6 and box.bottom >= 3240 - 1e-6
+
+
+def test_crop_skips_aspect_ratios_that_do_not_fit():
+    # 作品は 3250 x 3700（0.878）。4x5 縦と 8.5x11 縦のほうが近いが、
+    # 高さが画像の 4000 を超えるので 1x1 に落ちる
+    raw = make_raw()
+    crop = Cropper(CropConfig(composition_margin_ratio=0.0)).compute(
+        raw, detection_at(343.75, 37.5, 1156.25, 962.5), Straightening(status=Status.SUCCESS)
+    )
+    assert crop.aspect_ratio == "1x1"
+
+    box = crop_in_pixels(crop, raw.image_size)
+    assert box.width == pytest.approx(3700)
+    assert box.height == pytest.approx(3700)
+
+
+def test_aspect_ratio_holds_with_rotation():
+    raw = make_raw()
+    crop = Cropper(CropConfig()).compute(
+        raw,
+        detection_at(500, 300, 1000, 700),
+        Straightening(status=Status.SUCCESS, angle_degrees=3.0),
+    )
+    assert crop.aspect_ratio == "4x5 横"
+
+    box = crop_in_pixels(crop, raw.image_size)
+    assert box.width / box.height == pytest.approx(5 / 4)
+
+
+def test_empty_aspect_ratios_keep_free_ratio():
+    raw = make_raw()
+    crop = Cropper(CropConfig(aspect_ratios=[])).compute(
+        raw, detection_at(600, 250, 900, 750), Straightening(status=Status.SUCCESS)
+    )
+    assert crop.aspect_ratio is None
+    assert crop.note is None
+
+    box = crop_in_pixels(crop, raw.image_size)
+    assert box.width / box.height == pytest.approx(0.6)
 
 
 def test_new_xmp_contains_tags_and_crop(tmp_path):

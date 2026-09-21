@@ -121,6 +121,8 @@ def _crop(crop: Crop) -> str:
         f"L {crop.left:.3f} T {crop.top:.3f} R {crop.right:.3f} B {crop.bottom:.3f}"
         f"  回転 {crop.angle_degrees:+.2f}°"
     )
+    if crop.aspect_ratio:
+        text += f"  比率 {crop.aspect_ratio}"
     if crop.is_full_frame:
         text += "  全画面"
     if crop.contains_void:
