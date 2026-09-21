@@ -105,6 +105,8 @@ class XmpConfig(BaseModel):
     #: 全写真に付ける固定タグ
     base_tags: list[str] = Field(default_factory=lambda: ["ikebana"])
     group_tag_prefix: str = "artwork_"
+    #: audit --tag が、採否を見直すべき作品の写真に付けるキーワード
+    review_tag: str = "確認が必要"
 
 
 class Config(BaseModel):

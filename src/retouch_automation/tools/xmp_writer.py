@@ -6,6 +6,7 @@ XMP への書き込みはこのツールだけが行う。
 xmpMM:History・crd:CameraProfile などが入っており、丸ごと置き換えると失われる。
 既定は skip で、既存の XMP があれば触らない。人が Lightroom で直した内容を守るため。
 merge を指定すると crs: の現像設定と dc:subject のキーワードだけを差し替える。
+set_keyword は採否の監査から呼ばれ、dc:subject のキーワードを 1 つだけ付け外しする。
 
 実物の Lightroom 9.1 が書くサイドカーを確認した結果:
   - <?xpacket?> ラッパーは付かない
@@ -96,6 +97,26 @@ class XmpWriter:
             ElementTree.tostring(root, encoding="unicode") + "\n", encoding="utf-8"
         )
         return True
+
+
+def set_keyword(xmp_path: Path, keyword: str, present: bool) -> bool:
+    """既存 XMP の dc:subject に keyword を足す、または外す。
+
+    Lightroom が書いた採否フラグや他のキーワードには触れない。
+    足す・外す必要が無ければファイルを書かない。書き換えた場合は True を返す。
+    """
+    root = ElementTree.fromstring(xmp_path.read_text(encoding="utf-8"))
+    description = _description(root)
+    tags = [
+        li.text or ""
+        for li in description.iterfind(f"{{{DC}}}subject/{{{RDF}}}Bag/{{{RDF}}}li")
+    ]
+    if (keyword in tags) == present:
+        return False
+
+    _set_subject(description, [*tags, keyword] if present else [t for t in tags if t != keyword])
+    xmp_path.write_text(ElementTree.tostring(root, encoding="unicode") + "\n", encoding="utf-8")
+    return True
 
 
 def _description(root: ElementTree.Element) -> ElementTree.Element:

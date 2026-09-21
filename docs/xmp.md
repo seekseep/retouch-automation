@@ -208,6 +208,24 @@ XMP 側が Lightroom に上書きされることは無かった（`x:xmptk="reto
 `lr:hierarchicalSubject` は書かない。キーワードは `dc:subject` に平坦に並べる方針。
 分類グループは `artwork_0001` のような単独のタグとして付ける。
 
+### 採否フラグ（採用・却下）← 確定
+
+Lightroom 9.1 は採否フラグを `rdf:Description` の属性 `xmpDM:good` に書く。
+星レーティング（`xmp:Rating`）やカラーラベル（`xmp:Label`）とは別物。
+
+| Lightroom の操作 | XMP |
+| --- | --- |
+| 採用 | `xmpDM:good="True"` |
+| 除外 | `xmpDM:good="False"` |
+| フラグなし | 属性が無い |
+
+根拠は `20260921_奈良` の 178 枚。Lightroom 9.1 で全枚数にフラグを付けたあとのサイドカーで、
+`True` が 66 個、`False` が 112 個あった。`xmp:Rating` と `xmp:Label` はどれにも無かった。
+同じサイドカーの `dc:subject` には `ikebana` と `artwork_NNNN` がそのまま残っていた。
+
+このシステムはこの属性を書かない。`audit` サブコマンドが読むだけ。
+`audit --tag` が書くのは `dc:subject` のキーワード `確認が必要` の付け外しだけ（`xmp_writer.set_keyword`）。
+
 ---
 
 ## 未確定の項目
